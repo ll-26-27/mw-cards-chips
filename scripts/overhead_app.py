@@ -41,6 +41,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chip_count import DEFAULT_COLORS, ColorSpec, analyze, parse_color_arg  # noqa: E402
 from game import Table, parse_code  # noqa: E402
+import poker  # noqa: E402
 
 
 # ------------- frame sources -------------------------------------------------
@@ -191,9 +192,8 @@ class Holds:
     confirmed value until they press Yes again).
     """
 
-    FILE = Path(__file__).resolve().parent.parent / ".game-state.json"
-
-    def __init__(self):
+    def __init__(self, file: Path):
+        self.FILE = file
         self.lock = threading.Lock()
         self.chips: dict | None = None            # {"player_1": n, "player_2": n}
         self.cards: dict | None = None            # {"player_1": [codes], ...}
@@ -331,6 +331,7 @@ td small{display:block;font-size:inherit;color:var(--muted)}
     <div class="row">
       <label class="p2">Player 2 <input class="fix" id="fix-cards-2" placeholder="e.g. 7S"></label>
       <label class="p1">Player 1 <input class="fix" id="fix-cards-1" placeholder="e.g. QH 10D"></label>
+      <label class="holdem">Board <input class="fix" id="fix-cards-b" placeholder="e.g. 2C 7D KD" style="width:200px"></label>
       <span class="state">ranks 2–10 J Q K A, suits S H D C, JK = joker</span>
     </div>
     <div class="row"><button class="act" id="cards-btn"></button><span id="cards-state" class="state"></span></div>
@@ -340,16 +341,21 @@ td small{display:block;font-size:inherit;color:var(--muted)}
 <div id="tab-info">
 <table>
   <tr><th></th><td class="p2">Player 2 (green)</td><td class="p1">Player 1 (red)</td></tr>
+  <tr class="holdem"><th>Board</th><td colspan="2" id="board">–</td></tr>
   <tr><th>Bets</th><td id="bet2">–</td><td id="bet1">–</td></tr>
   <tr><th>Cards</th><td id="card2">–</td><td id="card1">–</td></tr>
-  <tr><th>Odds</th><td id="odds2">–</td><td id="odds1">–</td></tr>
-  <tr><th>Best bet</th><td id="best2">–</td><td id="best1">–</td></tr>
+  <tr class="holdem"><th>Hand</th><td id="made2">–</td><td id="made1">–</td></tr>
+  <tr><th id="th-odds">Odds</th><td id="odds2">–</td><td id="odds1">–</td></tr>
+  <tr><th id="th-best">Best bet</th><td id="best2">–</td><td id="best1">–</td></tr>
 </table>
 </div>
 <div id="status"></div>
 
 <script>
 const $=id=>document.getElementById(id);
+const MODE='__MODE__';   // "highcard" or "holdem"
+if(MODE!=='holdem')document.querySelectorAll('.holdem').forEach(el=>el.style.display='none');
+else{$('th-odds').textContent='Equity';$('th-best').textContent='Suggestion';}
 const pct=x=>Math.round(x*100)+'%';
 const SYM={S:'\\u2660',H:'\\u2665',D:'\\u2666',C:'\\u2663'};
 const LABEL=c=>c==='JK'?'Joker':c.slice(0,-1)+SYM[c.slice(-1)];
@@ -359,10 +365,13 @@ function cardHTML(code){
   const r=code.slice(0,-1),s=code.slice(-1),red=(s==='H'||s==='D')?' red':'';
   return `<span class="pc${red}"><span>${r}<br>${SYM[s]}</span><span class="pip">${SYM[s]}</span><span class="c2">${r}<br>${SYM[s]}</span></span>`;}
 const chipsText=c=>c?`green ${c.player_2} · red ${c.player_1}`:'–';
-const cardsText=c=>c?`Player 2: ${(c.player_2||[]).map(LABEL).join(' ')||'none'} · Player 1: ${(c.player_1||[]).map(LABEL).join(' ')||'none'}`:'–';
+const cardsText=c=>c?`Player 2: ${(c.player_2||[]).map(LABEL).join(' ')||'none'} · Player 1: ${(c.player_1||[]).map(LABEL).join(' ')||'none'}`+
+  (MODE==='holdem'?` · Board: ${(c.board||[]).map(LABEL).join(' ')||'none'}`:''):'–';
+const FIX={chips:[[1,'player_1'],[2,'player_2']],cards:[[1,'player_1'],[2,'player_2']].concat(MODE==='holdem'?[['b','board']]:[])};
 const ago=t=>t?new Date(t*1000).toLocaleTimeString():'';
 
 let tab='check';try{tab=localStorage.getItem('tab2')||tab}catch(e){}
+const qt=new URLSearchParams(location.search).get('tab');if(qt==='check'||qt==='info')tab=qt;
 function show(t){tab=t;document.querySelectorAll('nav [data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
   $('tab-check').style.display=t==='check'?'':'none';$('tab-info').style.display=t==='info'?'':'none';
   try{localStorage.setItem('tab2',t)}catch(e){}}
@@ -380,7 +389,7 @@ async function act(what){
   const body={action:confirming?'confirm':'recheck'};
   if(confirming)body.values=what==='chips'
     ?{player_1:+val('chips',1)||0,player_2:+val('chips',2)||0}
-    :{player_1:val('cards',1),player_2:val('cards',2)};
+    :Object.fromEntries(FIX.cards.map(([k,p])=>[p,val('cards',k)]));
   const r=await fetch('/hold/'+what,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   if(!r.ok){const e=await r.json().catch(()=>({}));$(what+'-state').textContent=e.error||'could not save';$(what+'-state').className='state err';return;}
   edited[what]=false;document.querySelectorAll(`input[id^=fix-${what}]`).forEach(el=>el.classList.remove('edited'));
@@ -396,6 +405,7 @@ async function tick(){
     // ---- check tab
     const live={player_1:[],player_2:[]};
     for(const p of ['player_1','player_2'])live[p]=((g.players||{})[p]||{cards:[]}).cards.map(x=>x.card);
+    if(MODE==='holdem')live.board=g.board||[];
     for(const [what,liveVal,text] of [['chips',c.counts,chipsText],['cards',live,cardsText]]){
       const checking=h.checking&&h.checking[what], held=h[what];
       $(what+'-live').innerHTML=checking?`Detected now: ${text(liveVal)}`:`<span class="held">Held: ${text(held)}</span>`;
@@ -403,8 +413,8 @@ async function tick(){
       $(what+'-btn').className='act'+(checking?' yes':'');
       // Fill the correction boxes: live values while checking (unless edited), held values otherwise.
       const src=checking?liveVal:held, fmt=what==='chips'?(v=>v==null?'':String(v)):(v=>(v||[]).join(' '));
-      for(const k of [1,2]){const el=$(`fix-${what}-${k}`);el.disabled=!checking;
-        if(!(checking&&edited[what])&&document.activeElement!==el)el.value=src?fmt(src['player_'+k]):'';}
+      for(const [k,key] of FIX[what]){const el=$(`fix-${what}-${k}`);el.disabled=!checking;
+        if(!(checking&&edited[what])&&document.activeElement!==el)el.value=src?fmt(src[key]):'';}
       $(what+'-state').className='state';
       $(what+'-state').textContent=checking?(held?`Display still shows: ${text(held)}`:'Display shows nothing yet'):`Held since ${ago(h.at[what])}`;
     }
@@ -419,6 +429,17 @@ async function tick(){
     const P=(d.game||{}).players||{},counts=d.chips;
     const n=k=>counts&&counts[k]!=null?counts[k]+(counts[k]===1?' chip':' chips'):'–';
     $('bet1').textContent=n('player_1');$('bet2').textContent=n('player_2');
+    if(MODE==='holdem'){
+      const G=d.game||{};
+      $('board').innerHTML=G.error?`<span class="err">${G.error}</span>`:
+        ((G.board||[]).length?G.board.map(cardHTML).join(' '):cardHTML(null))+`<small>${G.stage||''}</small>`;
+      ['player_1','player_2'].forEach((p,i)=>{const x=P[p]||{},cs=x.cards||[],hd=x.hand,k=i+1;
+        $('card'+k).innerHTML=(cs.length?cs.map(c=>cardHTML(c.card)).join(' '):cardHTML(null))+`<small>${x.feed||''}</small>`;
+        $('made'+k).textContent=hd&&hd.name?hd.name:'–';
+        $('odds'+k).innerHTML=hd?`${pct(hd.win)} win<small>${pct(hd.tie)} tie · ${pct(hd.lose)} lose · ${hd.runouts} runouts</small>`:'–';
+        $('best'+k).innerHTML=hd?`${hd.action}<small>${hd.to_call?`${hd.to_call} to call · needs ${pct(hd.pot_odds)}`:'nothing to call'}</small>`:'–';
+      });
+    }else
     ['player_1','player_2'].forEach((p,i)=>{const x=P[p]||{},cs=x.cards||[];const k=i+1;
       $('card'+k).innerHTML=(cs.length?cs.map(c=>cardHTML(c.card)).join(' '):cardHTML(null))+
         `<small>${cs.map(c=>c.card_label).join(' · ')}${cs.length?' · ':''}${x.feed||''}</small>`;
@@ -428,7 +449,10 @@ async function tick(){
       $('best'+k).innerHTML=cs.length?cs.map(c=>
         `${tag(c)}${c.bet}<small>${c.ev_per_chip>=0?'+':''}${c.ev_per_chip.toFixed(2)} chips expected per chip bet</small>`).join(''):'–';
     });
-    $('deck').textContent=h.started?`Round ${h.round} · ${d.deck_left} of 54 left · ${(h.history||[]).length} rounds played`:'Game not started';
+    $('deck').textContent=!h.started?'Game not started':MODE==='holdem'
+      ?`Hand ${h.round} · ${((d.game||g).stage)||''} · ${(h.history||[]).length} hands played`
+      :`Round ${h.round} · ${d.deck_left} of 54 left · ${(h.history||[]).length} rounds played`;
+    if(MODE==='holdem')$('next').textContent='Next hand';
     $('next').style.display=h.started?'':'none';
     $('start').textContent=h.started?'New game':'Start game';
     const errs=[c.status==='error'?'overhead: '+c.error:'',g.status&&g.status!=='ok'?g.status:''].filter(Boolean);
@@ -451,7 +475,8 @@ def fetch_frame(cards_url: str, feed: str) -> bytes | None:
     return None
 
 
-def make_handler(state: State, table: Table, holds: Holds, cards_url: str):
+def make_handler(state: State, table: Table, holds: Holds, cards_url: str, mode: str = "highcard"):
+    card_keys = ("player_1", "player_2") + (("board",) if mode == "holdem" else ())
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -491,7 +516,7 @@ def make_handler(state: State, table: Table, holds: Holds, cards_url: str):
                             values = {p: max(0, int(values.get(p, 0))) for p in ("player_1", "player_2")}
                         else:
                             parsed = {}
-                            for p in ("player_1", "player_2"):
+                            for p in card_keys:
                                 words = str(values.get(p, "")).replace(",", " ").split()
                                 codes = [parse_code(w) for w in words]
                                 if None in codes:
@@ -527,12 +552,21 @@ def make_handler(state: State, table: Table, holds: Holds, cards_url: str):
             with state.lock:
                 raw, ann, rep, seq = state.raw_jpg, state.ann_jpg, state.report, state.seq
             if path == "/":
-                self.send(200, "text/html; charset=utf-8", PAGE.encode())
+                self.send(200, "text/html; charset=utf-8", PAGE.replace("__MODE__", mode).encode())
             elif path in ("/state.json", "/counts.json"):
                 held = holds.snapshot()
                 used = held.pop("used") if held["started"] else None
-                game = table.summary(None, used)       # live cards
-                shown = table.summary(held["cards"], used) if held["cards"] is not None else None
+                if mode == "holdem":
+                    # Hold'em: hole cards per player + board; overhead chips = what each has put in.
+                    live = table.cards_now()
+                    feeds = {p: table.feeds[p] for p in ("player_1", "player_2")}
+                    game = poker.summary(live, live.get("board", []), rep.get("counts"), feeds)
+                    hc = held["cards"]
+                    shown = (poker.summary(hc, hc.get("board", []), held["chips"], feeds)
+                             if hc is not None else None)
+                else:
+                    game = table.summary(None, used)       # live cards
+                    shown = table.summary(held["cards"], used) if held["cards"] is not None else None
                 body = {
                     "chips": {**rep, "seq": seq},          # live overhead detection
                     "game": game,
@@ -540,7 +574,8 @@ def make_handler(state: State, table: Table, holds: Holds, cards_url: str):
                     # What displays show: only operator-confirmed values.
                     "display": {"chips": held["chips"], "game": shown,
                                 "round": held["round"] if held["started"] else None,
-                                "deck_left": (shown or game)["deck_left"] if held["started"] else None},
+                                "deck_left": (shown or game)["deck_left"] if held["started"] else None,
+                                "mode": mode},
                     "cards_url": cards_url,
                 }
                 self.send(200, "application/json", json.dumps(body).encode())
@@ -576,6 +611,12 @@ def main(argv: list[str]) -> int:
                     help="mw-cards-cv camera computer (serves /api/cards and /api/frame)")
     ap.add_argument("--p1-feed", default="camera-2", help="card feed for player 1 (red)")
     ap.add_argument("--p2-feed", default="camera-1", help="card feed for player 2 (green)")
+    ap.add_argument("--game", choices=["highcard", "holdem"], default="highcard",
+                    help="highcard: the 0/1/2-chip higher-card game; holdem: heads-up Texas Hold'em")
+    ap.add_argument("--board-feed", default="board",
+                    help="holdem: card feed for the community cards (or type them in the panel)")
+    ap.add_argument("--state-file", type=Path, default=None,
+                    help="where the game is saved (default .game-state[-holdem].json in the repo)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--color", action="append", default=[],
@@ -588,11 +629,16 @@ def main(argv: list[str]) -> int:
         colors[p] = c
 
     state = State()
-    table = Table({"player_1": args.p1_feed, "player_2": args.p2_feed})
-    holds = Holds()
+    feeds = {"player_1": args.p1_feed, "player_2": args.p2_feed}
+    if args.game == "holdem":
+        feeds["board"] = args.board_feed
+    table = Table(feeds)
+    repo = Path(__file__).resolve().parent.parent
+    holds = Holds(args.state_file or repo / (".game-state.json" if args.game == "highcard"
+                                             else f".game-state-{args.game}.json"))
     threading.Thread(target=worker, args=(args, colors, state), daemon=True).start()
     threading.Thread(target=cards_worker, args=(args.cards, table), daemon=True).start()
-    srv = ThreadingHTTPServer((args.host, args.port), make_handler(state, table, holds, args.cards))
+    srv = ThreadingHTTPServer((args.host, args.port), make_handler(state, table, holds, args.cards, args.game))
     print(f"[overhead] serving http://{args.host}:{args.port}  source={args.source}  cards={args.cards}",
           file=sys.stderr)
     try:

@@ -6,14 +6,15 @@
 // count with the card feeds from mw-cards-cv.
 //
 // Add to OBS as a Browser source (1920x1080) above the table camera:
-//   http://localhost:3200/cards
+//   http://localhost:3100/cards
 // Query params: source=<chips app url> (default http://localhost:8765),
 //   edge=top|bottom (default top), bg=transparent|green|black (default transparent).
 // Drag a panel to move it (saved via /api/cards-layout, so OBS follows);
 // double-click a panel to put both back in the default spot.
 
 import { useEffect, useRef, useState } from "react";
-import { FONT_FAMILIES } from "@/lib/fonts";
+// Fonts come from layout.tsx: --font-label is Inter Bold (card faces); body text uses the system face.
+const FONT = { bold: "var(--font-label), system-ui, sans-serif", text: "ui-sans-serif, system-ui, -apple-system, sans-serif" };
 
 const FRAME = { width: 1920, height: 1080 };
 const MARGIN = 64;
@@ -22,13 +23,17 @@ const GAP = 160;
 
 type Odds = { win: number | null; tie: number | null; lose: number | null; n: number };
 type PlayerCard = { card: string; card_label: string; odds: Odds; bet: number; ev_per_chip: number };
-type Player = { feed: string; cards: PlayerCard[] };
+// Hold'em (control panel run with --game holdem): one hand read per player instead of per-card odds.
+type Hand = { name: string | null; win: number; tie: number; lose: number; action: string; to_call: number; pot_odds: number };
+type Player = { feed: string; cards: PlayerCard[]; hand?: Hand };
+type Item = { key: string; name: string; color: string };
 type Layout = Record<string, { x: number; y: number }>;
 type State = {
   // Only operator-confirmed ("Yes, correct") values from the control panel.
   display?: {
     chips?: Record<string, number> | null;
-    game?: { deck_left?: number; players?: Record<string, Player> } | null;
+    game?: { deck_left?: number; players?: Record<string, Player>; board?: string[]; stage?: string; error?: string | null } | null;
+    mode?: string;
     round?: number | null;
     deck_left?: number | null;
   };
@@ -39,6 +44,7 @@ const PLAYERS = [
   { key: "player_2", name: "Player 2", color: "#30a46c" },
   { key: "player_1", name: "Player 1", color: "#e5484d" },
 ] as const;
+const BOARD: Item = { key: "board", name: "Board", color: "#9a9a9a" };
 
 const SUIT: Record<string, string> = { S: "♠", H: "♥", D: "♦", C: "♣" };
 
@@ -86,7 +92,7 @@ function Card({ code }: { code: string }) {
       style={{
         width: 120, height: 168, borderRadius: 12, background: "#fafafa",
         color: red ? "#d42a2a" : "#111", position: "relative",
-        boxShadow: "0 6px 18px rgba(0,0,0,.45)", fontFamily: FONT_FAMILIES["inter-bold"],
+        boxShadow: "0 6px 18px rgba(0,0,0,.45)", fontFamily: FONT.bold,
       }}
     >
       <div style={{ position: "absolute", top: 10, left: 12, fontSize: 28, lineHeight: 1, textAlign: "center" }}>
@@ -106,7 +112,10 @@ function Panel({ name, color, player, bet, align }: {
   name: string; color: string; player?: Player; bet?: number; align: "left" | "right";
 }) {
   const cards = player?.cards ?? [];
-  const text = { fontFamily: FONT_FAMILIES.inter, fontSize: 30, color: "#fff", lineHeight: 1.25 };
+  // One value, or "Q♥ 75% · K♥ 82%" when a player has several cards.
+  const perCard = (f: (c: PlayerCard) => string) =>
+    cards.length === 0 ? "–" : cards.length === 1 ? f(cards[0]) : cards.map((c) => `${c.card_label} ${f(c)}`).join(" · ");
+  const text = { fontFamily: FONT.text, fontSize: 30, color: "#fff", lineHeight: 1.25 };
   return (
     <div
       style={{
@@ -122,17 +131,43 @@ function Panel({ name, color, player, bet, align }: {
         {cards.length === 0 ? (
           <div style={{ width: 120, height: 168, borderRadius: 12, border: "3px dashed rgba(255,255,255,.35)" }} />
         ) : (
-          cards.map((c, i) => (
-            <div key={`${c.card}-${i}`} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-              <Card code={c.card} />
-              <div style={text}>{c.odds.win == null ? "–" : `${Math.round(c.odds.win * 100)}%`}</div>
-            </div>
-          ))
+          cards.map((c, i) => <Card key={`${c.card}-${i}`} code={c.card} />)
         )}
       </div>
-      <div style={text}>
-        P(win) {cards.length === 1 && cards[0].odds.win != null ? `${Math.round(cards[0].odds.win * 100)}%` : cards.length ? "per card" : "–"}
-        {" · "}Bet {bet ?? "–"} {bet === 1 ? "chip" : "chips"}
+      {player?.hand ? (
+        <div style={{ ...text, textAlign: align }}>
+          <div>{player.hand.name ?? "–"}</div>
+          <div>Equity {Math.round(player.hand.win * 100)}%</div>
+          <div>Suggestion {player.hand.action}</div>
+          <div>Actual bet {bet ?? "–"}</div>
+        </div>
+      ) : (
+        <div style={{ ...text, textAlign: align }}>
+          <div>P(win) {perCard((c) => (c.odds?.win == null ? "–" : `${Math.round(c.odds.win * 100)}%`))}</div>
+          <div>Optimal bet {perCard((c) => String(c.bet))}</div>
+          <div>Actual bet {bet ?? "–"}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BoardPanel({ board, stage, error }: { board: string[]; stage?: string; error?: string | null }) {
+  const text = { fontFamily: FONT.text, fontSize: 30, color: "#fff", lineHeight: 1.25 };
+  return (
+    <div
+      style={{
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 16,
+        background: "rgba(10,10,10,.72)", borderRadius: 16, padding: "20px 24px",
+      }}
+    >
+      <div style={{ ...text, color: BOARD.color }}>{error ?? stage ?? "Board"}</div>
+      <div style={{ display: "flex", gap: 14 }}>
+        {Array.from({ length: 5 }, (_, i) =>
+          board[i] ? <Card key={i} code={board[i]} /> : (
+            <div key={i} style={{ width: 120, height: 168, borderRadius: 12, border: "3px dashed rgba(255,255,255,.35)" }} />
+          ),
+        )}
       </div>
     </div>
   );
@@ -157,6 +192,9 @@ export default function CardsOverlay() {
   const background = bg === "green" ? "#00b140" : bg === "black" ? "#000" : "transparent";
   const counts = state.display?.chips ?? {};
   const players = state.display?.game?.players ?? {};
+  const holdem = state.display?.mode === "holdem";
+  // Left to right: Player 2, (board,) Player 1.
+  const items: Item[] = holdem ? [PLAYERS[0], BOARD, PLAYERS[1]] : [...PLAYERS];
   const vertical = edge === "bottom" ? { bottom: MARGIN } : { top: MARGIN };
 
   // ---- dragging: positions live on the server so OBS follows a drag made in Chrome ----
@@ -194,7 +232,7 @@ export default function CardsOverlay() {
     if (e.button !== 0) return;
     // Pin both panels where they are, so moving one doesn't re-centre the other.
     const next: Layout = { ...layoutRef.current };
-    for (const p of PLAYERS) next[p.key] ??= measure(p.key);
+    for (const p of items) next[p.key] ??= measure(p.key);
     setLayout(next);
     dragging.current = { player: key, sx: e.clientX, sy: e.clientY, ox: next[key].x, oy: next[key].y };
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -209,17 +247,17 @@ export default function CardsOverlay() {
   const onUp = async () => {
     if (!dragging.current) return;
     dragging.current = null;
-    for (const p of PLAYERS) {
+    for (const p of items) {
       const pos = layoutRef.current[p.key];
       if (pos) await save({ player: p.key, ...pos });
     }
   };
   const onReset = async () => {
-    for (const p of PLAYERS) await save({ player: p.key, reset: true });
+    for (const p of [...PLAYERS, BOARD]) await save({ player: p.key, reset: true });
     setLayout({});
   };
 
-  const panel = (p: (typeof PLAYERS)[number], pos?: { x: number; y: number }) => (
+  const panel = (p: Item, pos?: { x: number; y: number }) => (
     <div
       key={p.key}
       ref={(el) => { panels.current[p.key] = el; }}
@@ -234,7 +272,11 @@ export default function CardsOverlay() {
         pointerEvents: "auto", cursor: "grab", userSelect: "none", touchAction: "none",
       }}
     >
-      <Panel name={p.name} color={p.color} player={players[p.key]} bet={counts[p.key]} align={p.key === PLAYERS[0].key ? "left" : "right"} />
+      {p.key === BOARD.key ? (
+        <BoardPanel board={state.display?.game?.board ?? []} stage={state.display?.game?.stage} error={state.display?.game?.error} />
+      ) : (
+        <Panel name={p.name} color={p.color} player={players[p.key]} bet={counts[p.key]} align={p.key === PLAYERS[0].key ? "left" : "right"} />
+      )}
     </div>
   );
 
@@ -254,14 +296,14 @@ export default function CardsOverlay() {
             <div
               style={{
                 position: "absolute", ...vertical, left: 0, right: 0,
-                display: "flex", justifyContent: "center", alignItems: "flex-start", gap: GAP,
+                display: "flex", justifyContent: "center", alignItems: "flex-start", gap: holdem ? 40 : GAP,
                 pointerEvents: "none",
               }}
             >
-              {PLAYERS.filter((p) => !layout[p.key]).map((p) => panel(p))}
+              {items.filter((p) => !layout[p.key]).map((p) => panel(p))}
             </div>
           )}
-          {ok && PLAYERS.filter((p) => layout[p.key]).map((p) => panel(p, layout[p.key]))}
+          {ok && items.filter((p) => layout[p.key]).map((p) => panel(p, layout[p.key]))}
         </div>
       </div>
     </>

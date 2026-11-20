@@ -7,4 +7,4 @@ out
 scripts/__pycache__
 samples/out
 .venv
-.game-state.json
+.game-state*.json

@@ -77,10 +77,26 @@ P(win) uses only their own card against everything not yet used (the opponent's
 card counts as unknown to them). Payout assumed to be ±bet, so the best bet is 2
 when P(win) > P(lose) and 0 otherwise.
 
+### Heads-up Texas Hold'em (`--game holdem`, `scripts/poker.py`)
+
+```sh
+.venv/bin/python scripts/overhead_app.py --game holdem
+```
+
+- **Inputs:** each player's two hole cards from their camera, the board typed in the
+  panel's **Board** box (or a `board` feed from mw-cards-cv, `--board-feed`), and the
+  overhead chip count as what each player has put in this hand. All can be corrected
+  before **Yes, correct**. **Next hand** starts the next deal (no deck tracking across hands).
+- **Outputs:** made hand, equity with both hands known (exact from the turn, 6,000
+  sampled run-outs before), and a rule-of-thumb suggestion from equity vs. pot odds
+  (Bet/Check, or Call/Raise/Fold facing a bet). Not solver strategy.
+- Each mode saves its own game (`.game-state.json`, `.game-state-holdem.json`).
+- `?tab=info` / `?tab=check` opens the panel on that tab.
+
 ### OBS overlay (`overlay/`)
 
 A copy of the `/cards` page from `graphic-tools-for-blue` (`src/app/cards/page.tsx`,
-`src/app/api/cards-layout/route.ts`): both players' held cards, P(win) and bet,
+`src/app/api/cards-layout/route.ts`): both players' held cards, P(win) and bet (in hold'em: the board in the middle and each player's hand, equity and suggestion),
 Player 2 on the left and Player 1 on the right, draggable (positions shared through
 `/api/cards-layout`). Run graphic-tools-for-blue with `pnpm dev --port 3200` and add
 `http://localhost:3200/cards` as a 1920×1080 (or 4K) Browser source above `a.03`.

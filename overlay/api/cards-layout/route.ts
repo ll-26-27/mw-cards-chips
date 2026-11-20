@@ -26,8 +26,8 @@ export async function GET() {
 /** `{ player, x, y }` moves one panel; `{ player, reset: true }` puts it back. */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as { player?: unknown; x?: unknown; y?: unknown; reset?: unknown };
-  if (typeof body.player !== "string" || !/^player_[12]$/.test(body.player)) {
-    return NextResponse.json({ error: "player must be player_1 or player_2" }, { status: 400 });
+  if (typeof body.player !== "string" || !/^(player_[12]|board)$/.test(body.player)) {
+    return NextResponse.json({ error: "player must be player_1, player_2 or board" }, { status: 400 });
   }
   const layout = await read();
   if (body.reset) {
