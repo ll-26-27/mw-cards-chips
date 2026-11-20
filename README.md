@@ -30,7 +30,7 @@ Colors are HSV hue targets; override per-player on the command line:
 ```sh
 python3 scripts/chip_count.py samples \
   --color player_1=red:0:12 \
-  --color player_2=green:60:18
+  --color player_2=green:52:22
 ```
 
 Format: `player=name:hue:tolerance[:min_s[:min_v]]`. Hue is in OpenCV scale
@@ -47,6 +47,43 @@ Format: `player=name:hue:tolerance[:min_s[:min_v]]`. Hue is in OpenCV scale
 | IMG_1056.jpg | 2   | 2     |
 | IMG_1057.jpg | 0   | 0     |
 | IMG_1058.jpg | 0   | 1     |
+
+## Live control panel
+
+`scripts/overhead_app.py` runs the whole game on one machine (the one with OBS):
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install opencv-python-headless numpy obsws-python
+.venv/bin/python scripts/overhead_app.py --source obs --obs-source a.04
+open http://localhost:8765
+```
+
+- **Chips:** grabs the overhead (`a.04` in OBS, via the OBS WebSocket on port 4455;
+  the password is read from OBS's own config) and counts red and green chips.
+- **Cards:** polls the `mw-cards-cv` camera computer (`--cards http://10.250.155.29:3000`)
+  for `/api/cards`, and shows its camera frames from `/api/frame?feed=…`.
+  Player 1 (red) is `camera-2`, Player 2 (green) is `camera-1` (`--p1-feed`, `--p2-feed`).
+- **Check tab:** the live overhead and cameras with what was detected. Correct the
+  numbers or cards if needed, then **Yes, correct** holds them; **Check again** goes back
+  to live. Displays only ever show held values.
+- **Rounds:** **Start game** gives a fresh 54-card deck; **Next round** moves the held
+  cards to the used pile. Game state is kept in `.game-state.json` across restarts.
+- **Info tab / `GET /state.json`:** held bets, cards, P(win) and best bet per card.
+
+### Odds (`scripts/game.py`)
+
+54 cards (52 + 2 jokers), ace high, jokers top, equal ranks tie. Each player's
+P(win) uses only their own card against everything not yet used (the opponent's
+card counts as unknown to them). Payout assumed to be ±bet, so the best bet is 2
+when P(win) > P(lose) and 0 otherwise.
+
+### OBS overlay (`overlay/`)
+
+A copy of the `/cards` page from `graphic-tools-for-blue` (`src/app/cards/page.tsx`,
+`src/app/api/cards-layout/route.ts`): both players' held cards, P(win) and bet,
+Player 2 on the left and Player 1 on the right, draggable (positions shared through
+`/api/cards-layout`). Run graphic-tools-for-blue with `pnpm dev --port 3200` and add
+`http://localhost:3200/cards` as a 1920×1080 (or 4K) Browser source above `a.03`.
 
 ## Overhead feed
 

@@ -6,3 +6,5 @@ out
 .env*.local
 scripts/__pycache__
 samples/out
+.venv
+.game-state.json

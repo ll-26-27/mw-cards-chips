@@ -43,8 +43,8 @@ class ColorSpec:
 
 # Players bet with two chip colors. Overridable via CLI.
 DEFAULT_COLORS = {
-    "player_1": ColorSpec(name="red",   hue=0,  tolerance=12),
-    "player_2": ColorSpec(name="green", hue=60, tolerance=18),
+    "player_1": ColorSpec(name="red",   hue=0,  tolerance=12, min_s=120, min_v=100),  # rejects laptop-screen reds
+    "player_2": ColorSpec(name="green", hue=52, tolerance=22),  # a.04 overhead greens read ~37, phone samples ~60
 }
 
 
@@ -184,29 +184,41 @@ def annotate(bgr: np.ndarray, hits: list[ChipHit]) -> np.ndarray:
     return out
 
 
-def process(path: Path, out_dir: Path,
-            colors: dict[str, ColorSpec]) -> dict:
-    bgr = cv2.imread(str(path))
-    if bgr is None:
-        raise RuntimeError(f"could not read {path}")
+def analyze(bgr: np.ndarray, colors: dict[str, ColorSpec]
+            ) -> tuple[dict, np.ndarray, np.ndarray]:
+    """Run the full pipeline on an in-memory BGR frame.
+
+    Returns (report, cropped, annotated_crop). Used by both the batch CLI and
+    the live overhead app (scripts/overhead_app.py).
+    """
     cropped, box = crop_to_table(bgr)
     circles = find_circles(cropped)
     hits = classify(circles, cropped, colors)
     counts = {player: 0 for player in colors}
     for h in hits:
         counts[h.player] += 1
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_dir / f"{path.stem}.crop.jpg"), cropped)
-    cv2.imwrite(str(out_dir / f"{path.stem}.annotated.jpg"), annotate(cropped, hits))
-
-    return {
-        "file": path.name,
+    report = {
         "crop": {"x": box[0], "y": box[1], "w": box[2], "h": box[3]},
         "counts": counts,
+        "colors": {p: c.name for p, c in colors.items()},
         "circles_found": int(len(circles)),
         "detections": [asdict(h) for h in hits],
     }
+    return report, cropped, annotate(cropped, hits)
+
+
+def process(path: Path, out_dir: Path,
+            colors: dict[str, ColorSpec]) -> dict:
+    bgr = cv2.imread(str(path))
+    if bgr is None:
+        raise RuntimeError(f"could not read {path}")
+    report, cropped, annotated = analyze(bgr, colors)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_dir / f"{path.stem}.crop.jpg"), cropped)
+    cv2.imwrite(str(out_dir / f"{path.stem}.annotated.jpg"), annotated)
+
+    return {"file": path.name, **report}
 
 
 def parse_color_arg(spec: str) -> tuple[str, ColorSpec]:
